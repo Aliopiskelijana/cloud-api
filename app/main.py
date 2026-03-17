@@ -2,20 +2,31 @@ import warnings
 warnings.filterwarnings("ignore", ".*error reading bcrypt version.*")
 
 import logging
+import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import init_db, Base
 from app.middleware.usage_tracker import UsageTrackerMiddleware
 from app.routes import auth, api_keys, usage, protected
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# Init runs once at startup — env vars are set by Render before process starts
-init_db()
-Base.metadata.create_all(bind=__import__("app.database", fromlist=["get_engine"]).get_engine())
+
+def _setup_db():
+    """Run in background thread — does not block app startup or health check."""
+    try:
+        from app.database import init_db, get_engine, Base
+        init_db()
+        Base.metadata.create_all(bind=get_engine())
+        logger.info("Database tables ready")
+    except Exception as e:
+        logger.error("DB setup failed: %s", e)
+
+
+# Start DB setup in background — app is ready to serve /health immediately
+threading.Thread(target=_setup_db, daemon=True).start()
 
 app = FastAPI(
     title="Cloud API Monitor",
