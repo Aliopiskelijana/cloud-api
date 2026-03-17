@@ -2,43 +2,28 @@ import warnings
 warnings.filterwarnings("ignore", ".*error reading bcrypt version.*")
 
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import init_db, get_engine, Base
+from app.database import init_db, Base
 from app.middleware.usage_tracker import UsageTrackerMiddleware
 from app.routes import auth, api_keys, usage, protected
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    Base.metadata.create_all(bind=get_engine())
-    logger.info("Database ready")
-    yield
-
+# Init runs once at startup — env vars are set by Render before process starts
+init_db()
+Base.metadata.create_all(bind=__import__("app.database", fromlist=["get_engine"]).get_engine())
 
 app = FastAPI(
     title="Cloud API Monitor",
     description="API key management with usage tracking and rate limiting",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.add_middleware(UsageTrackerMiddleware)
 
 app.include_router(auth.router)
@@ -49,7 +34,7 @@ app.include_router(protected.router)
 
 @app.get("/", tags=["health"])
 def root():
-    return {"status": "ok", "message": "Cloud API Monitor"}
+    return {"status": "ok", "service": "Cloud API Monitor"}
 
 
 @app.get("/health", tags=["health"])
