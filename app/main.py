@@ -1,10 +1,13 @@
+import warnings
+warnings.filterwarnings("ignore", ".*error reading bcrypt version.*")
+
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import Base, engine
+from app.database import init_db, get_engine, Base
 from app.middleware.usage_tracker import UsageTrackerMiddleware
 from app.routes import auth, api_keys, usage, protected
 
@@ -17,8 +20,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created")
+    init_db()
+    Base.metadata.create_all(bind=get_engine())
+    logger.info("Database ready")
     yield
 
 
@@ -41,6 +45,11 @@ app.include_router(auth.router)
 app.include_router(api_keys.router)
 app.include_router(usage.router)
 app.include_router(protected.router)
+
+
+@app.get("/", tags=["health"])
+def root():
+    return {"status": "ok", "message": "Cloud API Monitor"}
 
 
 @app.get("/health", tags=["health"])

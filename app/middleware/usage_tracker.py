@@ -1,15 +1,15 @@
+import asyncio
 import time
 
 from fastapi import Request
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from app.database import SessionLocal
 from app import models
 
-
-EXCLUDED_PATHS = {"/docs", "/redoc", "/openapi.json", "/health"}
+EXCLUDED_PATHS = {"/docs", "/redoc", "/openapi.json", "/health", "/"}
 
 
 class UsageTrackerMiddleware(BaseHTTPMiddleware):
@@ -23,20 +23,26 @@ class UsageTrackerMiddleware(BaseHTTPMiddleware):
 
         api_key_header = request.headers.get("X-API-Key")
         if api_key_header:
-            self._log_usage(
-                api_key=api_key_header,
-                endpoint=request.url.path,
-                method=request.method,
-                status_code=response.status_code,
-                response_time_ms=elapsed_ms,
-                ip_address=request.client.host if request.client else "unknown",
+            asyncio.create_task(
+                run_in_threadpool(
+                    self._log_usage,
+                    api_key=api_key_header,
+                    endpoint=request.url.path,
+                    method=request.method,
+                    status_code=response.status_code,
+                    response_time_ms=elapsed_ms,
+                    ip_address=request.client.host if request.client else "unknown",
+                )
             )
 
         return response
 
     def _log_usage(self, api_key: str, endpoint: str, method: str,
                    status_code: int, response_time_ms: int, ip_address: str) -> None:
-        db: Session = SessionLocal()
+        from app.database import _SessionLocal
+        if _SessionLocal is None:
+            return
+        db: Session = _SessionLocal()
         try:
             key_record = db.query(models.APIKey).filter(
                 models.APIKey.key == api_key,
