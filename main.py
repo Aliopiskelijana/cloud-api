@@ -182,11 +182,12 @@ def _setup_db():
         from sqlalchemy.pool import NullPool
         # pg8000 is pure-Python (no C ext) — works on any Python version.
         # Strip psycopg2-specific sslmode param; pass SSL via connect_args instead.
-        import re, ssl
+        import re
+        # pg8000: pure-Python driver, no C extension.
+        # Strip psycopg2-specific sslmode param if present.
         db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
-        db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?')
-        # pg8000 accepts ssl_context=True to enable SSL with default CA verification
-        engine = create_engine(db_url, poolclass=NullPool, connect_args={"ssl_context": True})
+        db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
+        engine = create_engine(db_url, poolclass=NullPool)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")
