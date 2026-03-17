@@ -1,6 +1,3 @@
-import warnings
-warnings.filterwarnings("ignore", ".*error reading bcrypt version.*")
-
 import logging
 import threading
 
