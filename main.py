@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Session, declarative_base, relationship
 
@@ -85,8 +85,8 @@ class UsageLog(Base):
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class UserCreate(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., example="user@example.com")
+    password: str = Field(..., min_length=6, example="secret123")
 
 
 class UserOut(BaseModel):
@@ -98,21 +98,35 @@ class UserOut(BaseModel):
 
 
 class Token(BaseModel):
-    access_token: str
-    token_type: str
+    access_token: str = Field(..., description="JWT Bearer token — include as: Authorization: Bearer <token>")
+    token_type: str = Field(default="bearer")
 
 
 class APIKeyCreate(BaseModel):
-    name: str
+    name: str = Field(..., example="production", description="Human-readable label for this key")
 
 
 class APIKeyOut(BaseModel):
     id: int
-    key: str
+    key: str = Field(..., description="Pass this as the X-API-Key header on every protected request")
     name: str
     is_active: bool
     created_at: datetime
     model_config = {"from_attributes": True}
+
+
+class UsageOut(BaseModel):
+    total_requests: int
+    endpoints: dict = Field(..., description="Endpoint → request count breakdown")
+
+
+class DemoOut(BaseModel):
+    message: str
+    email: str
+    password: str
+    access_token: str
+    api_key: str
+    try_it: dict = Field(..., description="Copy-paste curl commands to test right now")
 
 
 # ── Auth helpers — bcrypt / jose imported lazily ──────────────────────────────
@@ -146,10 +160,41 @@ def decode_token(token: str) -> Optional[dict]:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
+_DESC = """
+## Cloud API Monitor
+
+A production-ready REST API for **API key management** with JWT authentication and usage tracking.
+
+### Quick start — 4 steps
+
+```bash
+BASE=https://cloud-api-vrgt.onrender.com
+
+# 1. Create account
+curl -X POST $BASE/auth/signup -H "Content-Type: application/json" \\
+     -d '{"email":"you@example.com","password":"secret123"}'
+
+# 2. Login → get JWT token
+TOKEN=$(curl -s -X POST $BASE/auth/login \\
+  -d "username=you@example.com&password=secret123" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 3. Create an API key
+KEY=$(curl -s -X POST $BASE/api-keys -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" -d '{"name":"prod"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['key'])")
+
+# 4. Hit the protected endpoint using your new key
+curl $BASE/protected -H "X-API-Key: $KEY"
+```
+
+### Or just hit `/demo` for an instant working credential set — no signup needed.
+"""
+
 app = FastAPI(
     title="Cloud API Monitor",
-    description="JWT auth · API key management · usage tracking",
+    description=_DESC,
     version="1.0.0",
+    contact={"name": "GitHub", "url": "https://github.com/Aliopiskelijana/cloud-api"},
+    license_info={"name": "MIT"},
 )
 app.add_middleware(
     CORSMiddleware,
@@ -199,9 +244,45 @@ threading.Thread(target=_setup_db, daemon=True).start()
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
-@app.get("/health", tags=["health"])
+@app.get("/health", tags=["health"], summary="Health check")
 def health():
     return {"status": "ok"}
+
+
+# ── Demo ──────────────────────────────────────────────────────────────────────
+@app.post(
+    "/demo",
+    response_model=DemoOut,
+    tags=["demo"],
+    summary="Instant demo credentials",
+    description="Creates a throw-away account + API key and returns everything you need to test all endpoints immediately. Safe to call multiple times.",
+)
+def demo(db: Session = Depends(get_db)):
+    import uuid, time
+    email = f"demo-{uuid.uuid4().hex[:8]}@cloudapi.dev"
+    password = "demo1234"
+    user = User(email=email, hashed_password=hash_password(password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    key = APIKey(name="demo-key", user_id=user.id)
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    token = create_access_token({"sub": user.email})
+    base = "https://cloud-api-vrgt.onrender.com"
+    return DemoOut(
+        message="Demo account ready. Credentials expire with the database (Render free DB ~30 days).",
+        email=email,
+        password=password,
+        access_token=token,
+        api_key=key.key,
+        try_it={
+            "list_keys":    f'curl {base}/api-keys -H "Authorization: Bearer {token}"',
+            "hit_protected": f'curl {base}/protected -H "X-API-Key: {key.key}"',
+            "usage_stats":  f'curl {base}/usage -H "Authorization: Bearer {token}"',
+        },
+    )
 
 
 # ── Frontend ──────────────────────────────────────────────────────────────────
@@ -211,7 +292,8 @@ def ui():
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-@app.post("/auth/signup", response_model=UserOut, status_code=201, tags=["auth"])
+@app.post("/auth/signup", response_model=UserOut, status_code=201, tags=["auth"],
+          summary="Register a new account")
 def signup(payload: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(400, "Email already registered")
@@ -222,7 +304,9 @@ def signup(payload: UserCreate, db: Session = Depends(get_db)):
     return user
 
 
-@app.post("/auth/login", response_model=Token, tags=["auth"])
+@app.post("/auth/login", response_model=Token, tags=["auth"],
+          summary="Login → get JWT Bearer token",
+          description="Returns a JWT. Pass it as `Authorization: Bearer <token>` on all authenticated routes.")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
@@ -234,7 +318,9 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
-@app.post("/api-keys", response_model=APIKeyOut, status_code=201, tags=["api-keys"])
+@app.post("/api-keys", response_model=APIKeyOut, status_code=201, tags=["api-keys"],
+          summary="Create a new API key",
+          description="Returns the key value once. Use it as `X-API-Key: <key>` header on `/protected`.")
 def create_key(
     payload: APIKeyCreate,
     current_user: User = Depends(get_current_user),
@@ -247,12 +333,14 @@ def create_key(
     return key
 
 
-@app.get("/api-keys", response_model=list[APIKeyOut], tags=["api-keys"])
+@app.get("/api-keys", response_model=list[APIKeyOut], tags=["api-keys"],
+         summary="List your API keys")
 def list_keys(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(APIKey).filter(APIKey.user_id == current_user.id).all()
 
 
-@app.delete("/api-keys/{key_id}", status_code=204, tags=["api-keys"])
+@app.delete("/api-keys/{key_id}", status_code=204, tags=["api-keys"],
+            summary="Revoke an API key")
 def revoke_key(
     key_id: int,
     current_user: User = Depends(get_current_user),
@@ -268,7 +356,9 @@ def revoke_key(
 
 
 # ── Usage ─────────────────────────────────────────────────────────────────────
-@app.get("/usage", tags=["usage"])
+@app.get("/usage", response_model=UsageOut, tags=["usage"],
+         summary="Usage stats for your API keys",
+         description="Returns total request count and a per-endpoint breakdown for all keys owned by the current user.")
 def usage_summary(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     keys = db.query(APIKey).filter(APIKey.user_id == current_user.id).all()
     key_ids = [k.id for k in keys]
@@ -283,7 +373,13 @@ def usage_summary(current_user: User = Depends(get_current_user), db: Session = 
 
 
 # ── Protected ─────────────────────────────────────────────────────────────────
-@app.get("/protected", tags=["protected"])
+@app.get(
+    "/protected",
+    tags=["protected"],
+    summary="Protected endpoint (requires X-API-Key)",
+    description="Pass your API key as `X-API-Key` header. Each call is logged and visible in `/usage`.\n\n"
+                "**Example:** `curl https://cloud-api-vrgt.onrender.com/protected -H 'X-API-Key: sk_...'`",
+)
 def protected_route(request: Request, db: Session = Depends(get_db)):
     import time
     start = time.monotonic()
