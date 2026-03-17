@@ -1,7 +1,8 @@
 """
-Cloud API Monitor — minimal single-entry-point for Render.
-Heavy imports (bcrypt, jose) are deferred to call time so the
-process binds the port and passes /health in < 1 second.
+Cloud API Monitor — Render entry point.
+Heavy C-extensions (bcrypt, jose) imported lazily at call time.
+SQLAlchemy engine created in a background thread so /health
+responds in < 1 s and passes Render's health-check timeout.
 """
 import logging
 import os
@@ -25,15 +26,15 @@ SECRET_KEY   = os.environ["SECRET_KEY"]
 ALGORITHM    = os.environ.get("ALGORITHM", "HS256")
 TOKEN_EXPIRE = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
-# ── Database (engine created lazily in background thread) ─────────────────────
-Base = declarative_base()
+# ── Database ──────────────────────────────────────────────────────────────────
+Base         = declarative_base()
 engine       = None
 SessionLocal = None
 
 
 def get_db():
     if SessionLocal is None:
-        raise HTTPException(503, "Database not ready yet")
+        raise HTTPException(503, "Database initializing, retry in a moment")
     db = SessionLocal()
     try:
         yield db
@@ -58,7 +59,8 @@ class User(Base):
 class APIKey(Base):
     __tablename__ = "api_keys"
     id         = Column(Integer, primary_key=True, index=True)
-    key        = Column(String, unique=True, index=True, default=lambda: f"sk_{_sec.token_urlsafe(32)}")
+    key        = Column(String, unique=True, index=True,
+                        default=lambda: f"sk_{_sec.token_urlsafe(32)}")
     name       = Column(String, nullable=False)
     user_id    = Column(Integer, ForeignKey("users.id"), nullable=False)
     is_active  = Column(Boolean, default=True)
@@ -85,20 +87,23 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
+
 class UserOut(BaseModel):
     id: int
     email: str
     is_active: bool
     created_at: datetime
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
+
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+
 class APIKeyCreate(BaseModel):
     name: str
+
 
 class APIKeyOut(BaseModel):
     id: int
@@ -106,11 +111,10 @@ class APIKeyOut(BaseModel):
     name: str
     is_active: bool
     created_at: datetime
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
-# ── Auth helpers (bcrypt/jose imported lazily) ────────────────────────────────
+# ── Auth helpers — bcrypt / jose imported lazily ──────────────────────────────
 def hash_password(password: str) -> str:
     import bcrypt
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
@@ -146,11 +150,19 @@ app = FastAPI(
     description="JWT auth · API key management · usage tracking",
     version="1.0.0",
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
@@ -160,16 +172,16 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 
-# ── DB init in background — doesn't block /health ────────────────────────────
+# ── DB init in background — does NOT block /health ───────────────────────────
 def _setup_db():
     global engine, SessionLocal
     try:
-        from sqlalchemy import create_engine as _ce
-        from sqlalchemy.orm import sessionmaker as _sm
-        from sqlalchemy.pool import NullPool as _NP
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import NullPool
         connect_args = {"connect_timeout": 10} if "postgresql" in DATABASE_URL else {}
-        engine = _ce(DATABASE_URL, poolclass=_NP, connect_args=connect_args)
-        SessionLocal = _sm(autocommit=False, autoflush=False, bind=engine)
+        engine = create_engine(DATABASE_URL, poolclass=NullPool, connect_args=connect_args)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")
     except Exception as e:
@@ -207,12 +219,19 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
-    return {"access_token": create_access_token({"sub": user.email}), "token_type": "bearer"}
+    return {
+        "access_token": create_access_token({"sub": user.email}),
+        "token_type": "bearer",
+    }
 
 
 # ── API Keys ──────────────────────────────────────────────────────────────────
 @app.post("/api-keys", response_model=APIKeyOut, status_code=201, tags=["api-keys"])
-def create_key(payload: APIKeyCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_key(
+    payload: APIKeyCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     key = APIKey(name=payload.name, user_id=current_user.id)
     db.add(key)
     db.commit()
@@ -226,8 +245,14 @@ def list_keys(current_user: User = Depends(get_current_user), db: Session = Depe
 
 
 @app.delete("/api-keys/{key_id}", status_code=204, tags=["api-keys"])
-def revoke_key(key_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    key = db.query(APIKey).filter(APIKey.id == key_id, APIKey.user_id == current_user.id).first()
+def revoke_key(
+    key_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    key = db.query(APIKey).filter(
+        APIKey.id == key_id, APIKey.user_id == current_user.id
+    ).first()
     if not key:
         raise HTTPException(404, "Key not found")
     key.is_active = False
@@ -239,14 +264,17 @@ def revoke_key(key_id: int, current_user: User = Depends(get_current_user), db: 
 def usage_summary(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     keys = db.query(APIKey).filter(APIKey.user_id == current_user.id).all()
     key_ids = [k.id for k in keys]
-    logs = db.query(UsageLog).filter(UsageLog.api_key_id.in_(key_ids)).all() if key_ids else []
+    logs = (
+        db.query(UsageLog).filter(UsageLog.api_key_id.in_(key_ids)).all()
+        if key_ids else []
+    )
     endpoints: dict = {}
     for log in logs:
         endpoints[log.endpoint] = endpoints.get(log.endpoint, 0) + 1
     return {"total_requests": len(logs), "endpoints": endpoints}
 
 
-# ── Protected endpoint ────────────────────────────────────────────────────────
+# ── Protected ─────────────────────────────────────────────────────────────────
 @app.get("/protected", tags=["protected"])
 def protected_route(request: Request, db: Session = Depends(get_db)):
     import time
@@ -254,7 +282,9 @@ def protected_route(request: Request, db: Session = Depends(get_db)):
     api_key_header = request.headers.get("X-API-Key")
     if not api_key_header:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "X-API-Key header required")
-    key_record = db.query(APIKey).filter(APIKey.key == api_key_header, APIKey.is_active == True).first()
+    key_record = db.query(APIKey).filter(
+        APIKey.key == api_key_header, APIKey.is_active == True
+    ).first()
     if not key_record:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or inactive API key")
     log = UsageLog(
