@@ -476,8 +476,31 @@ _HTML = """<!DOCTYPE html>
 
 <!-- AUTH SCREEN -->
 <div id="auth-screen">
-  <div class="card" style="width:100%;max-width:400px">
-    <h2 style="margin-bottom:1.5rem;font-size:1.4rem">Cloud API Monitor</h2>
+  <div class="card" style="width:100%;max-width:420px">
+    <h2 style="margin-bottom:.3rem;font-size:1.4rem">Cloud API Monitor</h2>
+    <p style="font-size:.82rem;color:#64748b;margin-bottom:1.5rem">API key management · JWT auth · usage tracking</p>
+
+    <!-- Demo banner -->
+    <div style="background:#7c6aff18;border:1px solid #7c6aff44;border-radius:10px;padding:1rem;margin-bottom:1.25rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:.75rem">
+        <div>
+          <div style="font-size:.85rem;font-weight:600;margin-bottom:.2rem">Try instantly</div>
+          <div style="font-size:.78rem;color:#94a3b8">No signup — get a live key in one click</div>
+        </div>
+        <button id="demo-btn" class="btn btn-sm" style="white-space:nowrap;min-width:90px" onclick="tryDemo()">⚡ Demo</button>
+      </div>
+      <div id="demo-creds" style="display:none;margin-top:.9rem;padding-top:.9rem;border-top:1px solid #7c6aff33">
+        <div style="font-size:.75rem;color:#94a3b8;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.05em">Your demo credentials</div>
+        <div id="demo-info" style="font-size:.8rem;line-height:1.8"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem">
+      <div style="flex:1;height:1px;background:#2a2d3e"></div>
+      <span style="font-size:.75rem;color:#475569">or sign in</span>
+      <div style="flex:1;height:1px;background:#2a2d3e"></div>
+    </div>
+
     <div class="tabs">
       <button class="tab active" onclick="switchTab('login')">Login</button>
       <button class="tab" onclick="switchTab('signup')">Sign Up</button>
@@ -494,7 +517,7 @@ _HTML = """<!DOCTYPE html>
     </div>
     <button class="btn" onclick="doAuth()">Continue</button>
     <p style="margin-top:1rem;font-size:.8rem;color:#64748b;text-align:center">
-      API docs: <a href="/docs" target="_blank">/docs</a>
+      <a href="/docs" target="_blank">API docs ↗</a>
     </p>
   </div>
 </div>
@@ -511,6 +534,17 @@ _HTML = """<!DOCTYPE html>
 
   <!-- Stats -->
   <div id="stats-wrap"></div>
+
+  <!-- Try /protected -->
+  <div class="card" style="margin-bottom:1.5rem" id="try-card">
+    <p class="section-title">Test a protected request</p>
+    <p style="font-size:.82rem;color:#64748b;margin-bottom:1rem">Pick a key below and send a real request to <code style="background:#12141e;padding:.1rem .4rem;border-radius:4px;font-size:.8rem">/protected</code> — it'll show up in usage stats.</p>
+    <div style="display:flex;gap:.6rem;align-items:center">
+      <select id="test-key-select" style="flex:1;padding:.65rem .9rem;background:#12141e;border:1px solid #2a2d3e;border-radius:8px;color:#e2e8f0;font-size:.85rem;outline:none"></select>
+      <button class="btn btn-sm btn-outline" onclick="testProtected()">Send →</button>
+    </div>
+    <div id="test-result" style="margin-top:.75rem;font-size:.82rem;font-family:monospace;color:#86efac;display:none"></div>
+  </div>
 
   <!-- API Keys -->
   <div class="card">
@@ -601,6 +635,10 @@ async function loadKeys() {
   if (!r.ok) { if(r.status===401) logout(); return; }
   const keys = await r.json();
   const el = document.getElementById('keys-list');
+  // populate test dropdown
+  const sel = document.getElementById('test-key-select');
+  sel.innerHTML = keys.filter(k=>k.is_active).map(k=>`<option value="${k.key}">${k.name} — ${k.key.slice(0,18)}…</option>`).join('');
+
   if (!keys.length) { el.innerHTML='<p style="color:#64748b;font-size:.9rem">No keys yet. Create one above.</p>'; return; }
   el.innerHTML = keys.map(k=>`
     <div class="key-row">
@@ -640,6 +678,55 @@ async function revokeKey(id) {
   if (!confirm('Revoke this key?')) return;
   await fetch(`${BASE}/api-keys/${id}`, {method:'DELETE',headers:authHeaders()});
   await loadKeys();
+}
+
+async function tryDemo() {
+  const btn = document.getElementById('demo-btn');
+  btn.textContent = '…'; btn.disabled = true;
+  const r = await fetch(`${BASE}/demo`, {method:'POST'});
+  btn.disabled = false;
+  if (!r.ok) { btn.textContent = '⚡ Demo'; return; }
+  const d = await r.json();
+  TOKEN = d.access_token; USER = d.email;
+  localStorage.setItem('cam_token', TOKEN);
+  localStorage.setItem('cam_user', USER);
+
+  // show creds in banner
+  const box = document.getElementById('demo-creds');
+  const info = document.getElementById('demo-info');
+  box.style.display = 'block';
+  info.innerHTML = `
+    <div style="display:flex;justify-content:space-between;margin-bottom:.25rem">
+      <span style="color:#64748b">Email</span>
+      <span style="color:#e2e8f0">${d.email}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:.25rem">
+      <span style="color:#64748b">Password</span>
+      <span style="color:#e2e8f0">${d.password}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span style="color:#64748b">API Key</span>
+      <div style="display:flex;align-items:center;gap:.3rem">
+        <span style="color:#a08cff;font-family:monospace;font-size:.75rem">${d.api_key.slice(0,20)}…</span>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('${d.api_key}');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1500)">⧉</button>
+      </div>
+    </div>`;
+  btn.textContent = '✓ Ready';
+
+  setTimeout(() => showDashboard(), 600);
+}
+
+async function testProtected() {
+  const sel = document.getElementById('test-key-select');
+  const key = sel.value;
+  if (!key) return;
+  const r = await fetch(`${BASE}/protected`, {headers:{'X-API-Key': key}});
+  const d = await r.json();
+  const el = document.getElementById('test-result');
+  el.style.display = 'block';
+  el.style.color = r.ok ? '#86efac' : '#fca5a5';
+  el.textContent = JSON.stringify(d);
+  await loadUsage();
 }
 
 // Auto-login if token exists
