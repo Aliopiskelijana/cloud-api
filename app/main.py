@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,12 +14,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-Base.metadata.create_all(bind=engine)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created")
+    yield
+
 
 app = FastAPI(
     title="Cloud API Monitor",
     description="API key management with usage tracking and rate limiting",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
