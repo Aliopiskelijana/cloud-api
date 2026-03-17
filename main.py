@@ -180,8 +180,10 @@ def _setup_db():
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         from sqlalchemy.pool import NullPool
-        connect_args = {"connect_timeout": 10} if "postgresql" in DATABASE_URL else {}
-        engine = create_engine(DATABASE_URL, poolclass=NullPool, connect_args=connect_args)
+        # pg8000 is pure-Python (no C ext) — works on any Python version.
+        # Replace scheme so SQLAlchemy uses pg8000 driver.
+        db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+        engine = create_engine(db_url, poolclass=NullPool)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ready")
