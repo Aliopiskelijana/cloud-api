@@ -254,6 +254,19 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug-db", tags=["health"])
+def debug_db():
+    """Diagnose DB connection — remove before prod."""
+    import traceback as _tb
+    try:
+        _setup_db()
+        db = next(get_db())
+        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+        return {"db": "ok", "engine": str(engine.url)[:60]}
+    except Exception as e:
+        return {"db": "error", "error": str(e), "trace": _tb.format_exc()[-800:]}
+
+
 # ── Demo ──────────────────────────────────────────────────────────────────────
 @app.post(
     "/demo",
