@@ -197,14 +197,16 @@ def _setup_db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import NullPool
-    # Use psycopg2 driver — handles SSL correctly for Render/Neon/etc
+    # Use psycopg2 driver with SSL for Render PostgreSQL
     db_url = re.sub(r'^postgres://', 'postgresql://', DATABASE_URL)  # normalise
     db_url = re.sub(r'^postgresql://', 'postgresql+psycopg2://', db_url)
-    # Ensure sslmode=require so Render accepts the connection
+    # Strip any existing sslmode, then add require
+    db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
     sep = '&' if '?' in db_url else '?'
-    if 'sslmode' not in db_url:
-        db_url += f'{sep}sslmode=require'
-    engine = create_engine(db_url, poolclass=NullPool)
+    db_url += f'{sep}sslmode=require'
+    engine = create_engine(db_url, poolclass=NullPool,
+                           connect_args={"sslrootcert": "disable",
+                                         "connect_timeout": 30})
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables ready")
