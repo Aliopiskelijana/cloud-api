@@ -199,7 +199,11 @@ def _setup_db():
     from sqlalchemy.pool import NullPool
     db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
     db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
-    engine = create_engine(db_url, poolclass=NullPool)
+    import ssl as _ssl
+    ssl_ctx = _ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = _ssl.CERT_NONE
+    engine = create_engine(db_url, poolclass=NullPool, connect_args={"ssl_context": ssl_ctx})
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables ready")
