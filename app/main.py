@@ -1,5 +1,5 @@
 import logging
-import threading
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,24 +11,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger(__name__)
 
 
-def _setup_db():
-    """Run in background thread — does not block app startup or health check."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialise DB at startup — works in both serverless and long-running environments."""
     try:
-        from app.database import init_db, get_engine, Base
+        from app.database import init_db
         init_db()
-        Base.metadata.create_all(bind=get_engine())
-        logger.info("Database tables ready")
+        logger.info("Database ready")
     except Exception as e:
         logger.error("DB setup failed: %s", e)
+    yield
 
-
-# Start DB setup in background — app is ready to serve /health immediately
-threading.Thread(target=_setup_db, daemon=True).start()
 
 app = FastAPI(
     title="Cloud API Monitor",
     description="API key management with usage tracking and rate limiting",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
