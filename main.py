@@ -223,25 +223,24 @@ def _setup_db():
     global engine, SessionLocal
     if engine is not None:
         return  # already initialised (warm invocation)
-    try:
-        import re
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import sessionmaker
-        from sqlalchemy.pool import NullPool
-        db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
-        db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
-        engine = create_engine(db_url, poolclass=NullPool)
-        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables ready")
-    except Exception as e:
-        logger.error("DB setup failed: %s", e)
-        raise
+    import re
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+    db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+    db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
+    engine = create_engine(db_url, poolclass=NullPool)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables ready")
 
 
 @asynccontextmanager
 async def lifespan(app):
-    _setup_db()
+    try:
+        _setup_db()
+    except Exception as e:
+        logger.error("DB startup error (will retry on first request): %s", e)
     yield
 
 
