@@ -188,6 +188,32 @@ curl $BASE/protected -H "X-API-Key: $KEY"
 ### Or just hit `/demo` for an instant working credential set — no signup needed.
 """
 
+# ── DB init ───────────────────────────────────────────────────────────────────
+def _setup_db():
+    global engine, SessionLocal
+    if engine is not None:
+        return  # already initialised (warm invocation)
+    import re
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+    db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+    db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
+    engine = create_engine(db_url, poolclass=NullPool)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables ready")
+
+
+@asynccontextmanager
+async def lifespan(app):
+    try:
+        _setup_db()
+    except Exception as e:
+        logger.error("DB startup error (will retry on first request): %s", e)
+    yield
+
+
 app = FastAPI(
     title="Cloud API Monitor",
     description=_DESC,
@@ -216,32 +242,6 @@ def get_current_user(
     if not user or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
     return user
-
-
-# ── DB init ───────────────────────────────────────────────────────────────────
-def _setup_db():
-    global engine, SessionLocal
-    if engine is not None:
-        return  # already initialised (warm invocation)
-    import re
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from sqlalchemy.pool import NullPool
-    db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
-    db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
-    engine = create_engine(db_url, poolclass=NullPool)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables ready")
-
-
-@asynccontextmanager
-async def lifespan(app):
-    try:
-        _setup_db()
-    except Exception as e:
-        logger.error("DB startup error (will retry on first request): %s", e)
-    yield
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
