@@ -1,12 +1,10 @@
 {
-  "framework": "fastapi",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
+    { "source": "/(.*)", "destination": "/api/index" }
   ],
   "functions": {
-    "app/index.py": {
-      "maxDuration": 300,
-      "excludeFiles": "{tests/**,.venv/**,.git/**,*.db}"
+    "api/index.py": {
+      "maxDuration": 60
     }
   }
 }
