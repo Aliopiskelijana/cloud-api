@@ -1,12 +1,11 @@
 """
-Cloud API Monitor — Render entry point.
+Cloud API Monitor — Vercel + Render entry point.
 Heavy C-extensions (bcrypt, jose) imported lazily at call time.
-SQLAlchemy engine created in a background thread so /health
-responds in < 1 s and passes Render's health-check timeout.
+DB initialised synchronously via FastAPI lifespan (works in serverless).
 """
 import logging
 import os
-import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -35,7 +34,7 @@ SessionLocal = None
 
 def get_db():
     if SessionLocal is None:
-        raise HTTPException(503, "Database initializing, retry in a moment")
+        _setup_db()   # lazy init fallback (e.g. first cold-start request)
     db = SessionLocal()
     try:
         yield db
@@ -195,6 +194,7 @@ app = FastAPI(
     version="1.0.0",
     contact={"name": "GitHub", "url": "https://github.com/Aliopiskelijana/cloud-api"},
     license_info={"name": "MIT"},
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -218,18 +218,16 @@ def get_current_user(
     return user
 
 
-# ── DB init in background — does NOT block /health ───────────────────────────
+# ── DB init ───────────────────────────────────────────────────────────────────
 def _setup_db():
     global engine, SessionLocal
+    if engine is not None:
+        return  # already initialised (warm invocation)
     try:
+        import re
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         from sqlalchemy.pool import NullPool
-        # pg8000 is pure-Python (no C ext) — works on any Python version.
-        # Strip psycopg2-specific sslmode param; pass SSL via connect_args instead.
-        import re
-        # pg8000: pure-Python driver, no C extension.
-        # Strip psycopg2-specific sslmode param if present.
         db_url = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
         db_url = re.sub(r'[?&]sslmode=[^&]*', '', db_url).rstrip('?&')
         engine = create_engine(db_url, poolclass=NullPool)
@@ -238,9 +236,13 @@ def _setup_db():
         logger.info("Database tables ready")
     except Exception as e:
         logger.error("DB setup failed: %s", e)
+        raise
 
 
-threading.Thread(target=_setup_db, daemon=True).start()
+@asynccontextmanager
+async def lifespan(app):
+    _setup_db()
+    yield
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -257,8 +259,8 @@ def health():
     summary="Instant demo credentials",
     description="Creates a throw-away account + API key and returns everything you need to test all endpoints immediately. Safe to call multiple times.",
 )
-def demo(db: Session = Depends(get_db)):
-    import uuid, time
+def demo(request: Request, db: Session = Depends(get_db)):
+    import uuid
     email = f"demo-{uuid.uuid4().hex[:8]}@cloudapi.dev"
     password = "demo1234"
     user = User(email=email, hashed_password=hash_password(password))
@@ -270,9 +272,9 @@ def demo(db: Session = Depends(get_db)):
     db.commit()
     db.refresh(key)
     token = create_access_token({"sub": user.email})
-    base = "https://cloud-api-vrgt.onrender.com"
+    base = str(request.base_url).rstrip("/")
     return DemoOut(
-        message="Demo account ready. Credentials expire with the database (Render free DB ~30 days).",
+        message="Demo account ready.",
         email=email,
         password=password,
         access_token=token,
